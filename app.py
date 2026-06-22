@@ -4,14 +4,16 @@ import plotly.express as px
 import requests
 import json
 import os
+import re
 import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 st.set_page_config(page_title="LLM Data Analyst", layout="wide")
 st.title("🧠 Мини-продукт: LLM-аналитика данных")
-st.caption("Анализ всего датасета + осмысленные графики")
+st.caption("Полный анализ датасета + осмысленные графики")
 
+# Отключение прокси
 for var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
     os.environ.pop(var, None)
 
@@ -32,81 +34,90 @@ if uploaded_file is not None:
         st.metric("Колонок", len(df.columns))
         st.metric("Пропущенных значений", df.isnull().sum().sum())
 
-    openrouter_key = st.text_input("OpenRouter API Key", type="password",
-                                   help="https://openrouter.ai/keys")
+    openrouter_key = st.text_input(
+        "OpenRouter API Key",
+        type="password",
+        help="https://openrouter.ai/keys"
+    )
 
-    model_name = st.selectbox("Модель",
-                              options=["google/gemini-2.5-flash", "openai/gpt-4o-mini", "openrouter/free"],
-                              index=0)
+    model_name = st.selectbox(
+        "Модель",
+        options=["google/gemini-2.5-flash", "openai/gpt-4o-mini", "openrouter/free"],
+        index=0
+    )
 
     if openrouter_key and st.button("🚀 Запустить профессиональный анализ", type="primary"):
-        with st.spinner("LLM проводит полный анализ датасета..."):
+        with st.spinner("LLM анализирует датасет..."):
             try:
-                # Полная информация о датасете
-                prompt = f"""Ты — профессиональный data analyst с 10-летним опытом.
-Проанализируй этот датасет полностью ({len(df)} строк, {len(df.columns)} колонок).
+                prompt = f"""Ты — senior data analyst.
+Проанализируй датасет ({len(df)} строк, {len(df.columns)} колонок).
 
 Колонки: {list(df.columns)}
-Типы данных: {df.dtypes.to_dict()}
 Пропуски: {df.isnull().sum().to_dict()}
-Основная статистика:
+Статистика:
 {df.describe(include='all').round(4).to_string()}
 
-Сделай **глубокий** анализ и верни **только** JSON:
+Верни **только** JSON:
 
 {{
-  "summary": "Общее описание датасета и бизнес-контекст",
-  "key_insights": ["5 самых важных инсайтов"],
-  "data_quality": "Оценка качества данных",
-  "business_recommendations": ["3-5 практических рекомендаций"],
+  "summary": "описание датасета",
+  "key_insights": ["инсайт 1", "инсайт 2"],
+  "business_recommendations": ["рекомендация 1"],
   "plots": [
-    {{"title": "Название графика", "code": "plotly.express код, который можно выполнить"}}
+    {{"title": "Название графика", "code": "код plotly.express без import"}}
   ]
 }}"""
 
                 response = requests.post(
                     "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {openrouter_key}",
-                        "Content-Type": "application/json"
-                    },
+                    headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"},
                     json={
                         "model": model_name,
                         "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.2,
+                        "temperature": 0.25,
                         "max_tokens": 2500
                     },
                     timeout=150
                 )
 
-                if response.status_code == 200:
-                    content = response.json()["choices"][0]["message"]["content"]
+                content = response.json()["choices"][0]["message"]["content"]
+
+                # Парсинг JSON
+                try:
                     result = json.loads(content)
+                except:
+                    json_match = re.search(r'\{[\s\S]*\}', content)
+                    result = json.loads(json_match.group(0)) if json_match else {"summary": content}
 
-                    st.subheader("📝 Итоговый анализ")
-                    st.markdown(result.get("summary", ""))
+                # Вывод
+                st.subheader("📝 Анализ")
+                st.markdown(result.get("summary", ""))
 
-                    st.subheader("🔑 Ключевые инсайты")
-                    for insight in result.get("key_insights", []):
-                        st.write(f"• {insight}")
+                st.subheader("🔑 Ключевые инсайты")
+                for insight in result.get("key_insights", []):
+                    st.write("•", insight)
 
-                    st.subheader("💼 Бизнес-рекомендации")
-                    for rec in result.get("business_recommendations", []):
-                        st.write(f"• {rec}")
+                st.subheader("💼 Рекомендации")
+                for rec in result.get("business_recommendations", []):
+                    st.write("•", rec)
 
-                    # Графики
-                    st.subheader("📈 Графики от LLM")
-                    for plot in result.get("plots", []):
-                        st.write(f"**{plot.get('title')}**")
-                        try:
-                            exec(plot["code"])
-                        except Exception as e:
-                            st.error(f"Не удалось построить график: {e}")
-                else:
-                    st.error(f"Ошибка API: {response.status_code}")
+                # Графики
+                st.subheader("📈 Графики от LLM")
+                for plot in result.get("plots", []):
+                    st.write(f"**{plot.get('title')}**")
+                    try:
+                        code = plot["code"]
+                        # Убираем import, если они есть
+                        code = re.sub(r'^\s*import .*?px.*?$', '', code, flags=re.MULTILINE)
+                        code = re.sub(r'^\s*from plotly.*?$', '', code, flags=re.MULTILINE)
+
+                        local_vars = {"df": df, "px": px, "st": st}
+                        exec(code, {"__builtins__": {}}, local_vars)
+                    except Exception as e:
+                        st.error(f"Ошибка графика: {e}")
 
             except Exception as e:
                 st.error(f"Ошибка: {e}")
 
 else:
-    st.info("Загрузите CSV-файл для анализа")
+    st.info("👆 Загрузите CSV-файл для анализа")
